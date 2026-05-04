@@ -27,6 +27,9 @@ import {
   Clock,
   Search,
   CheckCircle,
+  Info,
+  Bell,
+  Volume2,
   XCircle,
   CloudOff,
   RotateCcw,
@@ -224,6 +227,7 @@ export default function App() {
   const [isLoadingPrices, setIsLoadingPrices] = useState(false);
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [phoneError, setPhoneError] = useState('');
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [isDelivery, setIsDelivery] = useState(false);
@@ -233,6 +237,16 @@ export default function App() {
   const [pvcQuantity, setPvcQuantity] = useState(1);
   const [pvcFrontFile, setPvcFrontFile] = useState<FileData | null>(null);
   const [pvcBackFile, setPvcBackFile] = useState<FileData | null>(null);
+  const [isUploadingFront, setIsUploadingFront] = useState(false);
+  const [isUploadingBack, setIsUploadingBack] = useState(false);
+  const [prevOrderCount, setPrevOrderCount] = useState<number | null>(null);
+  const [showNewOrderToast, setShowNewOrderToast] = useState(false);
+  
+  const playNotificationSound = () => {
+    // Standard notification beep
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+    audio.play().catch(e => console.log("Audio play blocked", e));
+  };
   
   const [deliveryDetails, setDeliveryDetails] = useState({
     name: '',
@@ -249,17 +263,45 @@ export default function App() {
     size: PHOTO_SIZES[0]
   });
 
-  const fetchOrders = async () => {
-    setIsLoadingOrders(true);
+  const formatInIST = (dateStr: string) => {
+    try {
+      // Ensure the date string is treated as UTC if it's from SQLite
+      const isoStr = dateStr.includes(' ') && !dateStr.includes('T') 
+        ? dateStr.replace(' ', 'T') + 'Z' 
+        : dateStr;
+      return new Date(isoStr).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
+  const fetchOrders = async (silent = false) => {
+    if (!silent) setIsLoadingOrders(true);
     try {
       const response = await fetch('/api/orders');
       if (!response.ok) throw new Error('Failed to fetch orders');
       const data = await response.json();
+      
+      // If we are polling and have more orders than before
+      if (silent && prevOrderCount !== null && data.length > prevOrderCount) {
+        setShowNewOrderToast(true);
+        playNotificationSound();
+      }
+      
       setOrders(data);
+      setPrevOrderCount(data.length);
     } catch (err) {
       console.error(err);
     } finally {
-      setIsLoadingOrders(false);
+      if (!silent) setIsLoadingOrders(false);
     }
   };
 
@@ -327,10 +369,27 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
-    if (location.pathname.startsWith('/admin') && adminTab === 'orders') {
+    let interval: NodeJS.Timeout;
+    if (location.pathname.toLowerCase().startsWith('/admin') && adminTab === 'orders') {
       fetchOrders();
+      // Set up polling every 10 seconds
+      interval = setInterval(() => {
+        fetchOrders(true);
+      }, 10000);
     }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [location.pathname, adminTab]);
+
+  React.useEffect(() => {
+    if (showNewOrderToast) {
+      const timer = setTimeout(() => {
+        setShowNewOrderToast(false);
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [showNewOrderToast]);
 
   const handlePaperSizeChange = (size: string) => {
     const availableTypes = PAPER_CONFIG[size as keyof typeof PAPER_CONFIG][options.colorMode as keyof (typeof PAPER_CONFIG)['A4']];
@@ -417,6 +476,9 @@ export default function App() {
   };
 
   const handlePvcUpload = async (file: File, side: 'front' | 'back') => {
+    if (side === 'front') setIsUploadingFront(true);
+    else setIsUploadingBack(true);
+    
     setIsUploading(true);
     setUploadProgress(0);
     try {
@@ -459,6 +521,8 @@ export default function App() {
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
+      setIsUploadingFront(false);
+      setIsUploadingBack(false);
     }
   };
 
@@ -482,6 +546,12 @@ export default function App() {
     
     if (!deliveryDetails.name || !deliveryDetails.phone) {
       setError('Name and Phone Number are mandatory.');
+      if (!deliveryDetails.phone) setPhoneError('Phone number is required');
+      return;
+    }
+
+    if (deliveryDetails.phone.length !== 10) {
+      setPhoneError('Phone number must be exactly 10 digits');
       return;
     }
 
@@ -525,13 +595,23 @@ export default function App() {
         body: JSON.stringify(payload),
       });
 
-      if (!response.ok) throw new Error('Order failed');
+      if (!response.ok) {
+        if (response.status === 403) {
+          const data = await response.json();
+          setError(data.message || 'Orders are currently disabled.');
+          return;
+        }
+        throw new Error('Order failed');
+      }
       const data = await response.json();
       setLastOrderId(data.orderId);
       setOrderSuccess(true);
       setFiles([]);
       setIsDelivery(false);
       setDeliveryDetails({ name: '', phone: '', address: '' });
+      setPhoneError('');
+      // Scroll to top so order ID is visible
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setError('Failed to place order. Please try again.');
     } finally {
@@ -641,7 +721,7 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-6">
-            {!location.pathname.startsWith('/admin') && (
+            {!location.pathname.toLowerCase().startsWith('/admin') && (
               <div className="hidden lg:flex items-center gap-2 p-1 bg-gray-100 rounded-2xl">
                 <button 
                   onClick={() => { setActiveService('documents'); setFiles([]); setOrderSuccess(false); }}
@@ -673,7 +753,7 @@ export default function App() {
               </div>
             )}
             <nav className="flex items-center gap-6 text-sm font-medium text-gray-600">
-              {location.pathname.startsWith('/admin') && (
+              {location.pathname.toLowerCase().startsWith('/admin') && (
                 <>
                   <button 
                     onClick={() => navigate('/')}
@@ -705,14 +785,31 @@ export default function App() {
       <Routes>
         <Route path="/" element={
           <main className="max-w-5xl mx-auto px-6 py-12">
+          {settings.orders_enabled === 'false' && (
+            <motion.div 
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="col-span-12 mb-8 p-6 bg-amber-50 border border-amber-200 rounded-3xl flex items-center gap-4 text-amber-800"
+            >
+              <div className="w-12 h-12 bg-amber-100 rounded-2xl flex items-center justify-center text-amber-600 shrink-0">
+                <CloudOff size={24} />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg">Orders Temporarily Paused</h3>
+                <p className="text-sm opacity-90">{settings.orders_disabled_message || "We are currently not accepting new orders. Please try again later."}</p>
+              </div>
+            </motion.div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
             
             {/* Mobile Service Selector */}
-            <div className="lg:hidden col-span-1 border-b border-gray-100 pb-6 flex items-center gap-2 overflow-x-auto no-scrollbar">
+            <div className="lg:hidden col-span-1 border-b border-gray-100 pb-6 grid grid-cols-1 gap-3">
+
               <button 
                 onClick={() => { setActiveService('documents'); setFiles([]); setOrderSuccess(false); }}
                 className={cn(
-                  "whitespace-nowrap px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border",
+                  "w-full px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border",
                   activeService === 'documents' ? "bg-emerald-600 border-emerald-600 text-white shadow-lg" : "bg-white text-gray-500 border-gray-100"
                 )}
               >
@@ -721,7 +818,7 @@ export default function App() {
               <button 
                 onClick={() => { setActiveService('photos'); setFiles([]); setOrderSuccess(false); }}
                 className={cn(
-                  "whitespace-nowrap px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border",
+                  "w-full px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border",
                   activeService === 'photos' ? "bg-emerald-600 border-emerald-600 text-white shadow-lg" : "bg-white text-gray-500 border-gray-100"
                 )}
               >
@@ -730,7 +827,7 @@ export default function App() {
               <button 
                 onClick={() => { setActiveService('pvc_card'); setFiles([]); setOrderSuccess(false); setPvcFrontFile(null); setPvcBackFile(null); }}
                 className={cn(
-                  "whitespace-nowrap px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border",
+                  "w-full px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border",
                   activeService === 'pvc_card' ? "bg-emerald-600 border-emerald-600 text-white shadow-lg" : "bg-white text-gray-500 border-gray-100"
                 )}
               >
@@ -740,6 +837,30 @@ export default function App() {
 
             {/* Left Column: Upload & Config */}
             <div className="lg:col-span-7 space-y-8">
+              {orderSuccess && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="p-6 bg-emerald-50 border border-emerald-100 rounded-3xl flex flex-col items-center text-center gap-2"
+                >
+                  <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 mb-2">
+                    <CheckCircle2 size={28} />
+                  </div>
+                  <h3 className="text-lg font-bold text-emerald-900">Order Placed Successfully!</h3>
+                  <div className="bg-white px-6 py-4 rounded-2xl border border-emerald-100 my-2">
+                    <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mb-1">Your Order ID</p>
+                    <p className="text-2xl font-black text-emerald-600">#{lastOrderId}</p>
+                  </div>
+                  <p className="text-sm text-emerald-700">Please note down this Order ID. You will need it {isDelivery ? 'for delivery' : 'to collect your order at the counter'}.</p>
+                  <button 
+                    onClick={() => setOrderSuccess(false)}
+                    className="mt-4 text-xs font-bold text-emerald-600 underline"
+                  >
+                    Place another order
+                  </button>
+                </motion.div>
+              )}
+
               {/* Photo Specifications (Shown before upload for Photos) */}
               {activeService === 'photos' && (
                 <section className="bg-white border border-gray-200 rounded-3xl p-8 shadow-sm">
@@ -807,7 +928,8 @@ export default function App() {
                          <div 
                            className={cn(
                              "border-2 border-dashed rounded-2xl p-6 transition-all cursor-pointer flex flex-col items-center justify-center text-center gap-2 relative overflow-hidden h-40",
-                             pvcFrontFile ? "border-emerald-500 bg-emerald-50/30 font-bold" : "border-gray-200 bg-gray-50 hover:border-emerald-400 hover:bg-white"
+                             pvcFrontFile ? "border-emerald-500 bg-emerald-50/30 font-bold" : "border-gray-200 bg-gray-50 hover:border-emerald-400 hover:bg-white",
+                             isUploadingFront && "pointer-events-none opacity-80"
                            )}
                            onClick={() => {
                               const input = document.createElement('input');
@@ -820,13 +942,16 @@ export default function App() {
                               input.click();
                            }}
                          >
-                           {pvcFrontFile ? (
-                             <img 
-                               src={`/api/view/${pvcFrontFile.filename}`} 
-                               alt="Front" 
-                               className="w-full h-full object-contain rounded-lg"
-                               referrerPolicy="no-referrer"
-                             />
+                           {isUploadingFront ? (
+                             <div className="flex flex-col items-center gap-2">
+                               <Loader2 className="text-emerald-500 animate-spin" size={32} />
+                               <span className="text-xs font-bold text-emerald-600">Uploading Front...</span>
+                             </div>
+                           ) : pvcFrontFile ? (
+                             <div className="flex flex-col items-center gap-2">
+                               <CheckCircle2 className="text-emerald-500" size={32} />
+                               <span className="text-xs font-bold text-emerald-600">Front Uploaded</span>
+                             </div>
                            ) : (
                              <>
                                <Plus className="text-gray-400" size={24} />
@@ -841,7 +966,8 @@ export default function App() {
                          <div 
                            className={cn(
                              "border-2 border-dashed rounded-2xl p-6 transition-all cursor-pointer flex flex-col items-center justify-center text-center gap-2 relative overflow-hidden h-40",
-                             pvcBackFile ? "border-emerald-500 bg-emerald-50/30 font-bold" : "border-gray-200 bg-gray-50 hover:border-emerald-400 hover:bg-white"
+                             pvcBackFile ? "border-emerald-500 bg-emerald-50/30 font-bold" : "border-gray-200 bg-gray-50 hover:border-emerald-400 hover:bg-white",
+                             isUploadingBack && "pointer-events-none opacity-80"
                            )}
                            onClick={() => {
                               const input = document.createElement('input');
@@ -854,13 +980,16 @@ export default function App() {
                               input.click();
                            }}
                          >
-                           {pvcBackFile ? (
-                             <img 
-                               src={`/api/view/${pvcBackFile.filename}`} 
-                               alt="Back" 
-                               className="w-full h-full object-contain rounded-lg"
-                               referrerPolicy="no-referrer"
-                             />
+                           {isUploadingBack ? (
+                             <div className="flex flex-col items-center gap-2">
+                               <Loader2 className="text-emerald-500 animate-spin" size={32} />
+                               <span className="text-xs font-bold text-emerald-600">Uploading Back...</span>
+                             </div>
+                           ) : pvcBackFile ? (
+                             <div className="flex flex-col items-center gap-2">
+                               <CheckCircle2 className="text-emerald-500" size={32} />
+                               <span className="text-xs font-bold text-emerald-600">Back Uploaded</span>
+                             </div>
                            ) : (
                              <>
                                <Plus className="text-gray-400" size={24} />
@@ -870,40 +999,6 @@ export default function App() {
                          </div>
                        </div>
                     </div>
-
-                    {(pvcFrontFile || pvcBackFile) && (
-                      <div className="space-y-4">
-                        <label className="text-xs font-black uppercase tracking-widest text-gray-400">PVC Card Preview</label>
-                        <div className="flex flex-col md:flex-row gap-6 items-center justify-center p-8 bg-gray-100/50 rounded-[2.5rem] border border-gray-100">
-                           <div className="w-full max-w-[280px] aspect-[1.58/1] bg-white rounded-[14px] shadow-2xl overflow-hidden border border-gray-100 relative group transition-transform hover:scale-105 duration-500">
-                              {pvcFrontFile ? (
-                                <img 
-                                  src={`/api/view/${pvcFrontFile.filename}`} 
-                                  alt="Front Preview" 
-                                  className="w-full h-full object-cover"
-                                  referrerPolicy="no-referrer"
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center bg-gray-50 text-gray-300 italic text-xs">No Front Image</div>
-                              )}
-                              <div className="absolute top-3 left-3 px-2 py-0.5 bg-emerald-600 text-[8px] text-white font-black uppercase tracking-widest rounded-full shadow-lg">Front Side</div>
-                           </div>
-                           <div className="w-full max-w-[280px] aspect-[1.58/1] bg-white rounded-[14px] shadow-2xl overflow-hidden border border-gray-100 relative group transition-transform hover:scale-105 duration-500">
-                              {pvcBackFile ? (
-                                <img 
-                                  src={`/api/view/${pvcBackFile.filename}`} 
-                                  alt="Back Preview" 
-                                  className="w-full h-full object-cover"
-                                  referrerPolicy="no-referrer"
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center bg-gray-50 text-gray-300 italic text-xs">No Back Image</div>
-                              )}
-                              <div className="absolute top-3 left-3 px-2 py-0.5 bg-emerald-600 text-[8px] text-white font-black uppercase tracking-widest rounded-full shadow-lg">Back Side</div>
-                           </div>
-                        </div>
-                      </div>
-                    )}
 
                     <div className="space-y-3">
                       <label className="text-xs font-black uppercase tracking-widest text-gray-400">Quantity of Cards</label>
@@ -978,24 +1073,6 @@ export default function App() {
                   >
                     <AlertCircle size={18} />
                     {error}
-                  </motion.div>
-                )}
-
-                {orderSuccess && (
-                  <motion.div 
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="mt-4 p-6 bg-emerald-50 border border-emerald-100 rounded-3xl flex flex-col items-center text-center gap-2"
-                  >
-                    <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 mb-2">
-                      <CheckCircle2 size={28} />
-                    </div>
-                    <h3 className="text-lg font-bold text-emerald-900">Order Placed Successfully!</h3>
-                    <div className="bg-white px-6 py-4 rounded-2xl border border-emerald-100 my-2">
-                      <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mb-1">Your Order ID</p>
-                      <p className="text-2xl font-black text-emerald-600">#{lastOrderId}</p>
-                    </div>
-                    <p className="text-sm text-emerald-700">Please note down this Order ID. You will need it {isDelivery ? 'for delivery' : 'to collect your order at the counter'}.</p>
                   </motion.div>
                 )}
               </section>
@@ -1151,61 +1228,79 @@ export default function App() {
                             type="tel"
                             placeholder="Enter 10-digit number"
                             value={deliveryDetails.phone}
-                            onChange={(e) => setDeliveryDetails({...deliveryDetails, phone: e.target.value})}
-                            className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm"
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                              setDeliveryDetails({...deliveryDetails, phone: val});
+                              if (val.length > 0 && val.length < 10) {
+                                setPhoneError('Must be 10 digits');
+                              } else {
+                                setPhoneError('');
+                              }
+                            }}
+                            className={cn(
+                              "w-full bg-gray-50 border rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm",
+                              phoneError ? "border-red-300 ring-1 ring-red-300" : "border-gray-200"
+                            )}
                           />
+                          {phoneError && (
+                            <p className="text-[10px] text-red-500 font-bold mt-1 px-1">{phoneError}</p>
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="mt-8 pt-6 border-t border-gray-100">
-                      <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-sm font-bold flex items-center gap-2">
-                          <Truck className="text-emerald-600" size={16} />
-                          Home Delivery?
-                        </h4>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            className="sr-only peer" 
-                            checked={isDelivery}
-                            onChange={(e) => setIsDelivery(e.target.checked)}
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                        </label>
-                      </div>
-
-                      <AnimatePresence>
-                        {isDelivery && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: 'auto', opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            className="overflow-hidden"
-                          >
-                            <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl mb-4 flex items-start gap-3">
-                              <AlertCircle className="text-emerald-600 shrink-0 mt-0.5" size={16} />
-                              <p className="text-xs text-emerald-800 leading-relaxed">
-                                Home delivery is available only within a <strong>2KM radius</strong> from our shop. 
-                                An additional delivery fee of <strong>₹{settings.delivery_fee || '50'}</strong> will be applied.
-                              </p>
-                            </div>
-
-                            <div className="space-y-1.5">
-                              <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1.5">
-                                <MapPin size={12} /> Delivery Address <span className="text-red-500">*</span>
-                              </label>
-                              <textarea 
-                                placeholder="Enter your full address (within 2KM)"
-                                rows={3}
-                                value={deliveryDetails.address}
-                                onChange={(setVal) => setDeliveryDetails({...deliveryDetails, address: (setVal.target as HTMLTextAreaElement).value})}
-                                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm resize-none"
+                      {settings.home_delivery_enabled === 'true' && (
+                        <>
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="text-sm font-bold flex items-center gap-2">
+                              <Truck className="text-emerald-600" size={16} />
+                              Home Delivery?
+                            </h4>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                              <input 
+                                type="checkbox" 
+                                className="sr-only peer" 
+                                checked={isDelivery}
+                                onChange={(e) => setIsDelivery(e.target.checked)}
                               />
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                            </label>
+                          </div>
+
+                          <AnimatePresence>
+                            {isDelivery && (
+                              <motion.div
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: 'auto', opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl mb-4 flex items-start gap-3">
+                                  <AlertCircle className="text-emerald-600 shrink-0 mt-0.5" size={16} />
+                                  <p className="text-xs text-emerald-800 leading-relaxed">
+                                    Home delivery is available only within a <strong>2KM radius</strong> from our shop. 
+                                    An additional delivery fee of <strong>₹{settings.delivery_fee || '50'}</strong> will be applied.
+                                  </p>
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1.5">
+                                    <MapPin size={12} /> Delivery Address <span className="text-red-500">*</span>
+                                  </label>
+                                  <textarea 
+                                    placeholder="Enter your full address (within 2KM)"
+                                    rows={3}
+                                    value={deliveryDetails.address}
+                                    onChange={(setVal) => setDeliveryDetails({...deliveryDetails, address: (setVal.target as HTMLTextAreaElement).value})}
+                                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm resize-none"
+                                  />
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </>
+                      )}
 
                       {!isDelivery && (
                         <p className="text-xs text-gray-500 italic">
@@ -1345,6 +1440,40 @@ export default function App() {
         <Route path="/admin" element={
           isAdminAuthenticated ? (
             <main className="max-w-7xl mx-auto px-6 py-12">
+              <AnimatePresence>
+                {showNewOrderToast && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -50, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -50, scale: 0.95 }}
+                    className="fixed top-8 left-1/2 -translate-x-1/2 z-[100] bg-[#1A1A1A] text-white px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.3)] flex items-center gap-5 border border-white/10 backdrop-blur-xl"
+                  >
+                    <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20 relative overflow-hidden">
+                      <motion.div
+                        animate={{ rotate: [0, 15, -15, 0] }}
+                        transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                      >
+                        <Bell size={24} className="fill-white" />
+                      </motion.div>
+                      <div className="absolute inset-0 bg-gradient-to-tr from-white/20 to-transparent" />
+                    </div>
+                    <div className="pr-4">
+                      <h4 className="font-black text-xl leading-none tracking-tight">New Order!</h4>
+                      <p className="text-sm text-gray-400 mt-1 font-bold">Check the dashboard for details</p>
+                    </div>
+                    <div className="h-10 w-[1px] bg-white/10" />
+                    <button 
+                      onClick={() => setShowNewOrderToast(false)}
+                      className="p-2 hover:bg-white/5 rounded-2xl transition-all group"
+                    >
+                      <XCircle size={24} className="text-gray-500 group-hover:text-white" />
+                    </button>
+                    {/* Ring animation */}
+                    <div className="absolute -inset-1 rounded-[2.6rem] border border-emerald-500/30 animate-pulse pointer-events-none" />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
             <div>
               <h2 className="text-3xl font-black tracking-tight">Admin Dashboard</h2>
@@ -1423,7 +1552,7 @@ export default function App() {
                           </span>
                           <div className="flex items-center gap-1.5 text-gray-400 text-xs font-medium">
                             <Clock size={14} />
-                            {new Date(order.created_at).toLocaleString()}
+                            {formatInIST(order.created_at)}
                           </div>
                         </div>
                         
@@ -1601,26 +1730,81 @@ export default function App() {
             )
           ) : (
             <div className="space-y-8">
-              {/* Delivery Settings */}
-              <div className="bg-white border border-gray-200 rounded-3xl overflow-hidden shadow-sm">
-                <div className="p-6 border-b border-gray-100 bg-gray-50">
-                  <h3 className="text-xl font-black tracking-tight">General Settings</h3>
-                </div>
-                <div className="p-6">
-                  <div className="max-w-xs space-y-2">
-                    <label className="text-xs font-bold text-gray-600">Home Delivery Fee</label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold">₹</span>
-                      <input 
-                        type="number"
-                        value={settings.delivery_fee || 0}
-                        onChange={(e) => updateSetting('delivery_fee', e.target.value)}
-                        className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all font-bold"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
+               {/* Delivery Settings */}
+               <div className="bg-white border border-gray-200 rounded-3xl overflow-hidden shadow-sm">
+                 <div className="p-6 border-b border-gray-100 bg-gray-50">
+                   <h3 className="text-xl font-black tracking-tight">General & Store Settings</h3>
+                 </div>
+                 <div className="p-6">
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+                     <div className="space-y-6">
+                       <div className="space-y-2">
+                         <label className="text-xs font-bold text-gray-600">Home Delivery Fee</label>
+                         <div className="relative">
+                           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold">₹</span>
+                           <input 
+                             type="number"
+                             value={settings.delivery_fee || 0}
+                             onChange={(e) => updateSetting('delivery_fee', e.target.value)}
+                             className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all font-bold"
+                           />
+                         </div>
+                       </div>
+
+                       <div className="space-y-4">
+                         <label className="text-xs font-bold text-gray-600">Home Delivery Availability</label>
+                         <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                           <div>
+                             <p className="text-sm font-bold">Allow Home Delivery</p>
+                             <p className="text-xs text-gray-500">Enable or disable delivery option for customers</p>
+                           </div>
+                           <label className="relative inline-flex items-center cursor-pointer">
+                             <input 
+                               type="checkbox" 
+                               className="sr-only peer" 
+                               checked={settings.home_delivery_enabled === 'true'}
+                               onChange={(e) => updateSetting('home_delivery_enabled', String(e.target.checked))}
+                             />
+                             <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                           </label>
+                         </div>
+                       </div>
+                     </div>
+
+                     <div className="space-y-6">
+                       <div className="space-y-4">
+                         <label className="text-xs font-bold text-gray-600">Order Acceptance</label>
+                         <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                           <div>
+                             <p className="text-sm font-bold">Accept New Orders</p>
+                             <p className="text-xs text-gray-500">Temporarily stop taking new orders</p>
+                           </div>
+                           <label className="relative inline-flex items-center cursor-pointer">
+                             <input 
+                               type="checkbox" 
+                               className="sr-only peer" 
+                               checked={settings.orders_enabled === 'true' || settings.orders_enabled === undefined}
+                               onChange={(e) => updateSetting('orders_enabled', String(e.target.checked))}
+                             />
+                             <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                           </label>
+                         </div>
+                       </div>
+
+                       <div className="space-y-2">
+                         <label className="text-xs font-bold text-gray-600">Orders Disabled Message</label>
+                         <textarea 
+                           className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all text-sm resize-none"
+                           rows={3}
+                           placeholder="Message to show when orders are disabled..."
+                           value={settings.orders_disabled_message || ''}
+                           onChange={(e) => updateSetting('orders_disabled_message', e.target.value)}
+                         />
+                       </div>
+                     </div>
+                   </div>
+                 </div>
+               </div>
 
               {/* PVC Card Pricing */}
               <div className="bg-white border border-gray-200 rounded-3xl overflow-hidden shadow-sm">
@@ -1753,9 +1937,9 @@ export default function App() {
           <div>
             <h4 className="font-bold mb-4 text-sm uppercase tracking-wider">Location</h4>
             <p className="text-sm text-gray-500 leading-relaxed">
-              Shop No. 12, Laxmi Complex,<br />
-              Main Road, Near City Center,<br />
-              Mumbai, Maharashtra 400001
+              No.21/2, rayasandra main road, near g r sagar nivas,<br />
+              Naganathapura, E city post,<br />
+              Bengaluru, karnataka 560100
             </p>
           </div>
         </div>

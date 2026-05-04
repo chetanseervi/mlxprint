@@ -17,7 +17,7 @@ cloudinary.config({
 });
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -28,7 +28,12 @@ if (!fs.existsSync(uploadsDir)) {
 const upload = multer({ dest: uploadsDir });
 
 // Database setup
-const db = new Database("xerox.db");
+const dbPath = process.env.DATABASE_PATH || "xerox.db";
+const dbDir = path.dirname(dbPath);
+if (dbDir !== "." && !fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+const db = new Database(dbPath);
 db.exec(`
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,12 +72,27 @@ if (!deliveryFeeSetting) {
   db.prepare("INSERT INTO settings (key, value) VALUES ('delivery_fee', '50')").run();
 }
 
+const deliveryEnabledSetting = db.prepare("SELECT * FROM settings WHERE key = 'home_delivery_enabled'").get();
+if (!deliveryEnabledSetting) {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('home_delivery_enabled', 'true')").run();
+}
+
+const ordersEnabledSetting = db.prepare("SELECT * FROM settings WHERE key = 'orders_enabled'").get();
+if (!ordersEnabledSetting) {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('orders_enabled', 'true')").run();
+}
+
+const ordersDisabledMessageSetting = db.prepare("SELECT * FROM settings WHERE key = 'orders_disabled_message'").get();
+if (!ordersDisabledMessageSetting) {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('orders_disabled_message', 'We are currently not accepting new orders. Please try again later.')").run();
+}
+
 // Seed prices if empty
 const priceCount = db.prepare("SELECT COUNT(*) as count FROM prices").get() as any;
 if (priceCount.count === 0) {
   const initialPrices = [
     // A4
-    ['A4', 'Black & White', '70gsm Standard', 2],
+    ['A4', 'Black & White', '70gsm Standard', 3],
     ['A4', 'Black & White', 'Bond Paper 100gsm', 5],
     ['A4', 'Full Color', '70gsm Standard', 10],
     ['A4', 'Full Color', 'Bond Paper 100gsm', 15],
@@ -101,6 +121,9 @@ if (priceCount.count === 0) {
   for (const p of initialPrices) {
     insertPrice.run(...p);
   }
+} else {
+  // Update existing A4 B&W 70gsm price to 3
+  db.prepare("UPDATE prices SET price = 3 WHERE paper_size = 'A4' AND color_mode = 'Black & White' AND paper_type = '70gsm Standard'").run();
 }
 
 // Migration: Add columns if they don't exist
@@ -316,6 +339,16 @@ app.post("/api/upload", upload.array("files"), async (req, res) => {
 app.post("/api/orders", (req, res) => {
   const { files, paperSize, paperType, colorMode, isDelivery, deliveryDetails, totalPrice, orderType } = req.body;
   
+  // Check if orders are enabled
+  const ordersEnabled = db.prepare("SELECT value FROM settings WHERE key = 'orders_enabled'").get() as any;
+  if (ordersEnabled && ordersEnabled.value === 'false') {
+    const disabledMessage = db.prepare("SELECT value FROM settings WHERE key = 'orders_disabled_message'").get() as any;
+    return res.status(403).json({ 
+      error: "Orders are currently disabled", 
+      message: disabledMessage?.value || "We are currently not accepting new orders."
+    });
+  }
+
   // Generate a unique Order ID for the whole group
   const orderGroupId = `ORD-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 100)}`;
 
