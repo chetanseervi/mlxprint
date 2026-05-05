@@ -28,9 +28,6 @@ import {
   Search,
   CheckCircle,
   Info,
-  Bell,
-  Volume2,
-  XCircle,
   CloudOff,
   RotateCcw,
   Image as PhotoIcon,
@@ -57,6 +54,7 @@ interface OrderOptions {
   paperSize: string;
   paperType: string;
   colorMode: string;
+  copies: number;
 }
 
 interface Order {
@@ -78,6 +76,7 @@ interface Order {
   order_type?: string;
   cloudinary_public_id?: string;
   order_group_id?: string;
+  copies?: number;
 }
 
 interface GroupedOrder {
@@ -90,6 +89,7 @@ interface GroupedOrder {
   is_delivery: number;
   total_price: number;
   order_type?: string;
+  copies?: number;
   files: Order[];
 }
 
@@ -239,14 +239,12 @@ export default function App() {
   const [pvcBackFile, setPvcBackFile] = useState<FileData | null>(null);
   const [isUploadingFront, setIsUploadingFront] = useState(false);
   const [isUploadingBack, setIsUploadingBack] = useState(false);
-  const [prevOrderCount, setPrevOrderCount] = useState<number | null>(null);
-  const [showNewOrderToast, setShowNewOrderToast] = useState(false);
-  
-  const playNotificationSound = () => {
-    // Standard notification beep
-    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-    audio.play().catch(e => console.log("Audio play blocked", e));
-  };
+  const [isEditingPrices, setIsEditingPrices] = useState(false);
+  const [localPrices, setLocalPrices] = useState<PriceRecord[]>([]);
+  const [isSavingPrices, setIsSavingPrices] = useState(false);
+  const [isEditingSettings, setIsEditingSettings] = useState(false);
+  const [localSettings, setLocalSettings] = useState<Record<string, string>>({});
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   
   const [deliveryDetails, setDeliveryDetails] = useState({
     name: '',
@@ -256,11 +254,13 @@ export default function App() {
   const [options, setOptions] = useState<OrderOptions>({
     paperSize: 'A4',
     paperType: '70gsm Standard',
-    colorMode: 'Black & White'
+    colorMode: 'Black & White',
+    copies: 1
   });
 
   const [photoOptions, setPhotoOptions] = useState({
-    size: PHOTO_SIZES[0]
+    size: PHOTO_SIZES[0],
+    copies: 1
   });
 
   const formatInIST = (dateStr: string) => {
@@ -290,14 +290,7 @@ export default function App() {
       if (!response.ok) throw new Error('Failed to fetch orders');
       const data = await response.json();
       
-      // If we are polling and have more orders than before
-      if (silent && prevOrderCount !== null && data.length > prevOrderCount) {
-        setShowNewOrderToast(true);
-        playNotificationSound();
-      }
-      
       setOrders(data);
-      setPrevOrderCount(data.length);
     } catch (err) {
       console.error(err);
     } finally {
@@ -363,6 +356,82 @@ export default function App() {
     }
   };
 
+  const handleSaveSettings = async () => {
+    setIsSavingSettings(true);
+    try {
+      // Save each setting one by one or add a bulk settings API. 
+      // For now, let's keep it simple and just loop or use the existing API multiple times if needed, 
+      // but a bulk API is better. I'll add a bulk settings API.
+      const response = await fetch('/api/settings/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: localSettings })
+      });
+      if (!response.ok) throw new Error('Failed to save settings');
+      await fetchSettings();
+      setIsEditingSettings(false);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to save settings');
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  const startEditingSettings = () => {
+    setLocalSettings({...settings});
+    setIsEditingSettings(true);
+  };
+
+  const cancelEditingSettings = () => {
+    setIsEditingSettings(false);
+    setLocalSettings({});
+  };
+
+  const handleSavePrices = async () => {
+    setIsSavingPrices(true);
+    try {
+      const response = await fetch('/api/prices/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prices: localPrices })
+      });
+      if (!response.ok) throw new Error('Failed to save prices');
+      await fetchPrices();
+      setIsEditingPrices(false);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to save prices');
+    } finally {
+      setIsSavingPrices(false);
+    }
+  };
+
+  const handlePriceChange = (paper_size: string, color_mode: string, paper_type: string, price: number) => {
+    setLocalPrices(prev => {
+      const existing = prev.find(p => p.paper_size === paper_size && p.color_mode === color_mode && p.paper_type === paper_type);
+      if (existing) {
+        return prev.map(p => 
+          (p.paper_size === paper_size && p.color_mode === color_mode && p.paper_type === paper_type) 
+            ? { ...p, price } 
+            : p
+        );
+      } else {
+        return [...prev, { id: 0, paper_size, color_mode, paper_type, price }];
+      }
+    });
+  };
+
+  const startEditing = () => {
+    setLocalPrices([...prices]);
+    setIsEditingPrices(true);
+  };
+
+  const cancelEditing = () => {
+    setIsEditingPrices(false);
+    setLocalPrices([]);
+  };
+
   React.useEffect(() => {
     fetchPrices();
     fetchSettings();
@@ -381,15 +450,6 @@ export default function App() {
       if (interval) clearInterval(interval);
     };
   }, [location.pathname, adminTab]);
-
-  React.useEffect(() => {
-    if (showNewOrderToast) {
-      const timer = setTimeout(() => {
-        setShowNewOrderToast(false);
-      }, 8000);
-      return () => clearTimeout(timer);
-    }
-  }, [showNewOrderToast]);
 
   const handlePaperSizeChange = (size: string) => {
     const availableTypes = PAPER_CONFIG[size as keyof typeof PAPER_CONFIG][options.colorMode as keyof (typeof PAPER_CONFIG)['A4']];
@@ -574,6 +634,7 @@ export default function App() {
         paperSize: photoOptions.size,
         paperType: photoOptions.size === 'Custom Size' ? `Photo Print (${customPhotoSize})` : 'Photo Print',
         colorMode: 'Full Color',
+        copies: photoOptions.copies,
         isDelivery,
         deliveryDetails,
         totalPrice: estimatedCost,
@@ -586,7 +647,8 @@ export default function App() {
         isDelivery,
         deliveryDetails,
         totalPrice: estimatedCost,
-        orderType: 'pvc_card'
+        orderType: 'pvc_card',
+        copies: pvcQuantity
       };
 
       const response = await fetch('/api/orders', {
@@ -672,6 +734,7 @@ export default function App() {
         is_delivery: first.is_delivery,
         total_price: first.total_price,
         order_type: first.order_type,
+        copies: first.copies,
         files: items
       } as GroupedOrder;
     }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -703,7 +766,7 @@ export default function App() {
   const deliveryFee = isDelivery ? parseFloat(settings.delivery_fee || '50') : 0;
   const estimatedCost = activeService === 'pvc_card'
     ? (pvcFrontFile && pvcBackFile ? (pricePerPage * pvcQuantity) + deliveryFee : 0)
-    : (files.length > 0) ? (activeService === 'documents' ? (totalPages * pricePerPage) : (files.length * pricePerPage)) + deliveryFee : 0;
+    : (files.length > 0) ? (activeService === 'documents' ? (totalPages * pricePerPage * options.copies) : (files.length * pricePerPage * photoOptions.copies)) + deliveryFee : 0;
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-emerald-100">
@@ -1158,7 +1221,22 @@ export default function App() {
                                 </select>
                               </div>
 
-                              <div className="space-y-2 md:col-span-2">
+                              <div className="space-y-2">
+                                <label className="text-sm font-semibold text-gray-600">Number of Copies</label>
+                                <div className="flex items-center gap-4 p-2 bg-gray-50 rounded-xl border border-gray-100 w-full justify-between">
+                                   <button 
+                                     onClick={() => setOptions(prev => ({ ...prev, copies: Math.max(1, prev.copies - 1) }))}
+                                     className="w-10 h-10 rounded-lg bg-white border border-gray-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
+                                   > - </button>
+                                   <span className="text-lg font-black text-gray-800 flex-1 text-center">{options.copies}</span>
+                                   <button 
+                                     onClick={() => setOptions(prev => ({ ...prev, copies: prev.copies + 1 }))}
+                                     className="w-10 h-10 rounded-lg bg-white border border-gray-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
+                                   > + </button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-2 md:col-span-1">
                                 <label className="text-sm font-semibold text-gray-600">Color Mode</label>
                                 <div className="grid grid-cols-2 gap-4">
                                   {['Black & White', 'Full Color'].map((mode) => (
@@ -1180,11 +1258,28 @@ export default function App() {
                           </div>
                         </>
                       ) : (
-                        <div className="flex items-center gap-3 p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                          <CheckCircle className="text-emerald-600 shrink-0" size={20} />
-                          <p className="text-sm text-emerald-800 font-medium">
-                            Photo size <strong>{photoOptions.size === 'Custom Size' ? customPhotoSize : photoOptions.size}</strong> selected.
-                          </p>
+                        <div className="space-y-6">
+                          <div className="flex items-center gap-3 p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                            <CheckCircle className="text-emerald-600 shrink-0" size={20} />
+                            <p className="text-sm text-emerald-800 font-medium">
+                              Photo size <strong>{photoOptions.size === 'Custom Size' ? customPhotoSize : photoOptions.size}</strong> selected.
+                            </p>
+                          </div>
+                          
+                          <div className="space-y-3">
+                            <label className="text-sm font-semibold text-gray-600">Number of Copies</label>
+                            <div className="flex items-center gap-6 p-3 bg-gray-50 rounded-2xl border border-gray-100 w-fit">
+                               <button 
+                                 onClick={() => setPhotoOptions(prev => ({ ...prev, copies: Math.max(1, prev.copies - 1) }))}
+                                 className="w-10 h-10 rounded-xl bg-white border border-gray-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
+                               > - </button>
+                               <span className="text-xl font-black text-gray-800 w-8 text-center">{photoOptions.copies}</span>
+                               <button 
+                                 onClick={() => setPhotoOptions(prev => ({ ...prev, copies: prev.copies + 1 }))}
+                                 className="w-10 h-10 rounded-xl bg-white border border-gray-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
+                               > + </button>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1379,7 +1474,23 @@ export default function App() {
                               <span className="text-gray-500">Color Mode</span>
                               <span className="font-medium">{options.colorMode}</span>
                             </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-500">Copies</span>
+                              <span className="font-medium">{options.copies} units</span>
+                            </div>
                           </>
+                        )}
+                        {activeService === 'photos' && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">Copies</span>
+                            <span className="font-medium">{photoOptions.copies} units</span>
+                          </div>
+                        )}
+                        {activeService === 'pvc_card' && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">Quantity</span>
+                            <span className="font-medium">{pvcQuantity} units</span>
+                          </div>
                         )}
                         {isDelivery && (
                           <div className="flex justify-between text-sm text-emerald-600 font-medium">
@@ -1440,41 +1551,7 @@ export default function App() {
         <Route path="/admin" element={
           isAdminAuthenticated ? (
             <main className="max-w-7xl mx-auto px-6 py-12">
-              <AnimatePresence>
-                {showNewOrderToast && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -50, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -50, scale: 0.95 }}
-                    className="fixed top-8 left-1/2 -translate-x-1/2 z-[100] bg-[#1A1A1A] text-white px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.3)] flex items-center gap-5 border border-white/10 backdrop-blur-xl"
-                  >
-                    <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20 relative overflow-hidden">
-                      <motion.div
-                        animate={{ rotate: [0, 15, -15, 0] }}
-                        transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-                      >
-                        <Bell size={24} className="fill-white" />
-                      </motion.div>
-                      <div className="absolute inset-0 bg-gradient-to-tr from-white/20 to-transparent" />
-                    </div>
-                    <div className="pr-4">
-                      <h4 className="font-black text-xl leading-none tracking-tight">New Order!</h4>
-                      <p className="text-sm text-gray-400 mt-1 font-bold">Check the dashboard for details</p>
-                    </div>
-                    <div className="h-10 w-[1px] bg-white/10" />
-                    <button 
-                      onClick={() => setShowNewOrderToast(false)}
-                      className="p-2 hover:bg-white/5 rounded-2xl transition-all group"
-                    >
-                      <XCircle size={24} className="text-gray-500 group-hover:text-white" />
-                    </button>
-                    {/* Ring animation */}
-                    <div className="absolute -inset-1 rounded-[2.6rem] border border-emerald-500/30 animate-pulse pointer-events-none" />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
             <div>
               <h2 className="text-3xl font-black tracking-tight">Admin Dashboard</h2>
               <p className="text-gray-500 mt-1">Manage and process incoming print orders</p>
@@ -1567,11 +1644,11 @@ export default function App() {
                                 <h4 className="font-bold text-sm truncate leading-tight">{file.original_name}</h4>
                                 <p className="text-[10px] text-gray-500 mt-0.5 font-medium">
                                   {order.order_type === 'pvc_card' ? (
-                                    <>PVC Card • {file.paper_type}</>
+                                    <>PVC Card • {file.paper_type} • {file.copies || 1} Copies</>
                                   ) : order.order_type === 'photo' ? (
-                                    <>Photo Print • {file.paper_size}</>
+                                    <>Photo Print • {file.paper_size} • {file.copies || 1} Copies</>
                                   ) : (
-                                    <>{file.page_count} Pages • {file.paper_size} • {file.color_mode} • {file.paper_type}</>
+                                    <>{file.page_count} Pages • {file.paper_size} • {file.color_mode} • {file.paper_type} • {file.copies || 1} Copies</>
                                   )}
                                 </p>
                                 <div className="flex gap-2 mt-2">
@@ -1730,10 +1807,69 @@ export default function App() {
             )
           ) : (
             <div className="space-y-8">
-               {/* Delivery Settings */}
+              {/* Pricing Controls */}
+              <div className="bg-white border border-emerald-100 rounded-3xl p-6 shadow-sm flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Manage Pricing</h3>
+                  <p className="text-sm text-gray-500">Edit and save all prices at once</p>
+                </div>
+                <div className="flex gap-3">
+                  {!isEditingPrices ? (
+                    <button 
+                      onClick={startEditing}
+                      className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all hover:bg-emerald-700 shadow-lg shadow-emerald-100 flex items-center gap-2"
+                    >
+                      <Settings2 size={16} /> Edit Pricing
+                    </button>
+                  ) : (
+                    <>
+                      <button 
+                        onClick={cancelEditing}
+                        className="px-6 py-3 bg-white border border-gray-200 text-gray-500 rounded-2xl font-black text-xs uppercase tracking-widest transition-all hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={handleSavePrices}
+                        disabled={isSavingPrices}
+                        className="px-8 py-3 bg-emerald-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all hover:bg-emerald-700 shadow-lg shadow-emerald-100 flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {isSavingPrices ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />} 
+                        Save All Changes
+                      </button>
+                    </>
+                  )}
+                </div>
+                   {/* Delivery Settings */}
                <div className="bg-white border border-gray-200 rounded-3xl overflow-hidden shadow-sm">
-                 <div className="p-6 border-b border-gray-100 bg-gray-50">
+                 <div className="p-6 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
                    <h3 className="text-xl font-black tracking-tight">General & Store Settings</h3>
+                   <div className="flex gap-2">
+                     {!isEditingSettings ? (
+                       <button 
+                         onClick={startEditingSettings}
+                         className="px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs transition-all hover:bg-emerald-700 h-9"
+                       >
+                         Edit Settings
+                       </button>
+                     ) : (
+                       <>
+                         <button 
+                           onClick={cancelEditingSettings}
+                           className="px-4 py-2 bg-white border border-gray-200 text-gray-500 rounded-xl font-bold text-xs h-9 transition-all hover:bg-gray-50"
+                         >
+                           Cancel
+                         </button>
+                         <button 
+                           onClick={handleSaveSettings}
+                           disabled={isSavingSettings}
+                           className="px-6 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs h-9 transition-all hover:bg-emerald-700 flex items-center gap-2"
+                         >
+                           {isSavingSettings ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />} Save
+                         </button>
+                       </>
+                     )}
+                   </div>
                  </div>
                  <div className="p-6">
                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
@@ -1744,13 +1880,17 @@ export default function App() {
                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold">₹</span>
                            <input 
                              type="number"
-                             value={settings.delivery_fee || 0}
-                             onChange={(e) => updateSetting('delivery_fee', e.target.value)}
-                             className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all font-bold"
+                             value={(isEditingSettings ? localSettings : settings).delivery_fee || 0}
+                             readOnly={!isEditingSettings}
+                             onChange={(e) => setLocalSettings(prev => ({ ...prev, delivery_fee: e.target.value }))}
+                             className={cn(
+                               "w-full pl-8 pr-4 py-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold",
+                               isEditingSettings ? "bg-white border-emerald-200" : "bg-gray-50 border-gray-100 cursor-not-allowed"
+                             )}
                            />
                          </div>
                        </div>
-
+ 
                        <div className="space-y-4">
                          <label className="text-xs font-bold text-gray-600">Home Delivery Availability</label>
                          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
@@ -1762,15 +1902,19 @@ export default function App() {
                              <input 
                                type="checkbox" 
                                className="sr-only peer" 
-                               checked={settings.home_delivery_enabled === 'true'}
-                               onChange={(e) => updateSetting('home_delivery_enabled', String(e.target.checked))}
+                               disabled={!isEditingSettings}
+                               checked={(isEditingSettings ? localSettings : settings).home_delivery_enabled === 'true'}
+                               onChange={(e) => setLocalSettings(prev => ({ ...prev, home_delivery_enabled: String(e.target.checked) }))}
                              />
-                             <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                             <div className={cn(
+                               "w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600",
+                               !isEditingSettings && "opacity-50 cursor-not-allowed"
+                             )}></div>
                            </label>
                          </div>
                        </div>
                      </div>
-
+ 
                      <div className="space-y-6">
                        <div className="space-y-4">
                          <label className="text-xs font-bold text-gray-600">Order Acceptance</label>
@@ -1783,28 +1927,36 @@ export default function App() {
                              <input 
                                type="checkbox" 
                                className="sr-only peer" 
-                               checked={settings.orders_enabled === 'true' || settings.orders_enabled === undefined}
-                               onChange={(e) => updateSetting('orders_enabled', String(e.target.checked))}
+                               disabled={!isEditingSettings}
+                               checked={(isEditingSettings ? localSettings : settings).orders_enabled === 'true' || (isEditingSettings ? localSettings : settings).orders_enabled === undefined}
+                               onChange={(e) => setLocalSettings(prev => ({ ...prev, orders_enabled: String(e.target.checked) }))}
                              />
-                             <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                             <div className={cn(
+                               "w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600",
+                               !isEditingSettings && "opacity-50 cursor-not-allowed"
+                             )}></div>
                            </label>
                          </div>
                        </div>
-
+ 
                        <div className="space-y-2">
                          <label className="text-xs font-bold text-gray-600">Orders Disabled Message</label>
                          <textarea 
-                           className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all text-sm resize-none"
+                           className={cn(
+                             "w-full border rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm resize-none",
+                             isEditingSettings ? "bg-white border-emerald-200" : "bg-gray-50 border-gray-100 cursor-not-allowed"
+                           )}
                            rows={3}
+                           readOnly={!isEditingSettings}
                            placeholder="Message to show when orders are disabled..."
-                           value={settings.orders_disabled_message || ''}
-                           onChange={(e) => updateSetting('orders_disabled_message', e.target.value)}
+                           value={(isEditingSettings ? localSettings : settings).orders_disabled_message || ''}
+                           onChange={(e) => setLocalSettings(prev => ({ ...prev, orders_disabled_message: e.target.value }))}
                          />
                        </div>
                      </div>
                    </div>
                  </div>
-               </div>
+               </div>              </div>
 
               {/* PVC Card Pricing */}
               <div className="bg-white border border-gray-200 rounded-3xl overflow-hidden shadow-sm">
@@ -1819,7 +1971,7 @@ export default function App() {
                     {[
                       { label: 'Standard PVC Card', paper_size: 'Standard PVC', paper_type: 'PVC Card' }
                     ].map((opt) => {
-                      const priceObj = prices.find(p => p.paper_size === opt.paper_size && p.paper_type === opt.paper_type);
+                      const priceObj = (isEditingPrices ? localPrices : prices).find(p => p.paper_size === opt.paper_size && p.paper_type === opt.paper_type);
                       return (
                         <div key={opt.label} className="space-y-2">
                           <label className="text-xs font-bold text-gray-600">{opt.label}</label>
@@ -1828,8 +1980,12 @@ export default function App() {
                             <input 
                               type="number"
                               value={priceObj?.price || 0}
-                              onChange={(e) => updatePrice(opt.paper_size, 'Full Color', opt.paper_type, parseFloat(e.target.value))}
-                              className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all font-bold"
+                              readOnly={!isEditingPrices}
+                              onChange={(e) => handlePriceChange(opt.paper_size, 'Full Color', opt.paper_type, parseFloat(e.target.value))}
+                              className={cn(
+                                "w-full pl-8 pr-4 py-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold",
+                                isEditingPrices ? "bg-white border-emerald-200" : "bg-gray-50 border-gray-100 cursor-not-allowed"
+                              )}
                             />
                           </div>
                         </div>
@@ -1850,7 +2006,7 @@ export default function App() {
                 <div className="p-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {PHOTO_SIZES.map((size) => {
-                      const priceObj = prices.find(p => p.paper_size === size && p.paper_type === 'Photo Print');
+                      const priceObj = (isEditingPrices ? localPrices : prices).find(p => p.paper_size === size && p.paper_type === 'Photo Print');
                       return (
                         <div key={size} className="space-y-2">
                           <label className="text-xs font-bold text-gray-600">{size}</label>
@@ -1859,8 +2015,12 @@ export default function App() {
                             <input 
                               type="number"
                               value={priceObj?.price || 0}
-                              onChange={(e) => updatePrice(size, 'Full Color', 'Photo Print', parseFloat(e.target.value))}
-                              className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all font-bold"
+                              readOnly={!isEditingPrices}
+                              onChange={(e) => handlePriceChange(size, 'Full Color', 'Photo Print', parseFloat(e.target.value))}
+                              className={cn(
+                                "w-full pl-8 pr-4 py-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold",
+                                isEditingPrices ? "bg-white border-emerald-200" : "bg-gray-50 border-gray-100 cursor-not-allowed"
+                              )}
                             />
                           </div>
                         </div>
@@ -1884,7 +2044,7 @@ export default function App() {
                         <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">{mode} Options</h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                           {PAPER_CONFIG[size as keyof typeof PAPER_CONFIG][mode as keyof (typeof PAPER_CONFIG)['A4']].map((type) => {
-                            const priceObj = prices.find(p => p.paper_size === size && p.color_mode === mode && p.paper_type === type);
+                            const priceObj = (isEditingPrices ? localPrices : prices).find(p => p.paper_size === size && p.color_mode === mode && p.paper_type === type);
                             return (
                               <div key={type} className="space-y-2">
                                 <label className="text-xs font-bold text-gray-600">{type}</label>
@@ -1893,8 +2053,12 @@ export default function App() {
                                   <input 
                                     type="number"
                                     value={priceObj?.price || 0}
-                                    onChange={(e) => updatePrice(size, mode, type, parseFloat(e.target.value))}
-                                    className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all font-bold"
+                                    readOnly={!isEditingPrices}
+                                    onChange={(e) => handlePriceChange(size, mode, type, parseFloat(e.target.value))}
+                                    className={cn(
+                                      "w-full pl-8 pr-4 py-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold",
+                                      isEditingPrices ? "bg-white border-emerald-200" : "bg-gray-50 border-gray-100 cursor-not-allowed"
+                                    )}
                                   />
                                 </div>
                               </div>

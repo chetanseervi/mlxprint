@@ -157,6 +157,9 @@ if (!columnNames.includes("order_group_id")) {
 if (!columnNames.includes("order_type")) {
   db.exec("ALTER TABLE orders ADD COLUMN order_type TEXT DEFAULT 'document'");
 }
+if (!columnNames.includes("copies")) {
+  db.exec("ALTER TABLE orders ADD COLUMN copies INTEGER DEFAULT 1");
+}
 
 app.use(cors());
 app.use(express.json());
@@ -337,7 +340,7 @@ app.post("/api/upload", upload.array("files"), async (req, res) => {
 });
 
 app.post("/api/orders", (req, res) => {
-  const { files, paperSize, paperType, colorMode, isDelivery, deliveryDetails, totalPrice, orderType } = req.body;
+  const { files, paperSize, paperType, colorMode, isDelivery, deliveryDetails, totalPrice, orderType, copies } = req.body;
   
   // Check if orders are enabled
   const ordersEnabled = db.prepare("SELECT value FROM settings WHERE key = 'orders_enabled'").get() as any;
@@ -356,9 +359,9 @@ app.post("/api/orders", (req, res) => {
     INSERT INTO orders (
       filename, original_name, page_count, paper_size, paper_type, color_mode,
       is_delivery, customer_name, customer_phone, customer_address, total_price, 
-      cloudinary_url, cloudinary_public_id, order_group_id, order_type
+      cloudinary_url, cloudinary_public_id, order_group_id, order_type, copies
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   
   const transaction = db.transaction((orderFiles) => {
@@ -378,7 +381,8 @@ app.post("/api/orders", (req, res) => {
         file.cloudinary_url || null,
         file.cloudinary_public_id || null,
         orderGroupId,
-        orderType || 'document'
+        orderType || 'document',
+        copies || 1
       );
     }
   });
@@ -396,6 +400,32 @@ app.get("/api/orders", (req, res) => {
 app.get("/api/prices", (req, res) => {
   const prices = db.prepare("SELECT * FROM prices").all();
   res.json(prices);
+});
+
+app.post("/api/prices/bulk", (req, res) => {
+  const { prices } = req.body;
+  if (!Array.isArray(prices)) {
+    return res.status(400).json({ error: "Prices must be an array" });
+  }
+
+  try {
+    const insertPrice = db.prepare(`
+      INSERT INTO prices (paper_size, color_mode, paper_type, price) 
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(paper_size, color_mode, paper_type) DO UPDATE SET price = excluded.price
+    `);
+
+    const transaction = db.transaction((priceList) => {
+      for (const p of priceList) {
+        insertPrice.run(p.paper_size, p.color_mode, p.paper_type, p.price);
+      }
+    });
+
+    transaction(prices);
+    res.json({ success: true, count: prices.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/prices", (req, res) => {
@@ -419,6 +449,28 @@ app.get("/api/settings", (req, res) => {
     return acc;
   }, {});
   res.json(settingsMap);
+});
+
+app.post("/api/settings/bulk", (req, res) => {
+  const { settings } = req.body;
+  if (!settings || typeof settings !== 'object') {
+    return res.status(400).json({ error: "Settings must be an object" });
+  }
+
+  try {
+    const insertSetting = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    
+    const transaction = db.transaction((settingsObj) => {
+      for (const [key, value] of Object.entries(settingsObj)) {
+        insertSetting.run(key, String(value));
+      }
+    });
+
+    transaction(settings);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/settings", (req, res) => {
