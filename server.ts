@@ -107,8 +107,8 @@ if (priceCount.count === 0) {
     // Photos
     ['Passport size (8 nos)', 'Full Color', 'Photo Print', 80],
     ['Passport (6 nos) + 4 Stamp size', 'Full Color', 'Photo Print', 80],
-    ['2x3 inch (2 nos)', 'Full Color', 'Photo Print', 40],
-    ['4x6 inch', 'Full Color', 'Photo Print', 30],
+    ['2x3 inch (2 nos)', 'Full Color', 'Photo Print', 80],
+    ['4x6 inch', 'Full Color', 'Photo Print', 80],
     ['5x7 inch', 'Full Color', 'Photo Print', 100],
     ['8x10 inch', 'Full Color', 'Photo Print', 150],
     ['A4 Photo', 'Full Color', 'Photo Print', 170],
@@ -124,6 +124,10 @@ if (priceCount.count === 0) {
 } else {
   // Update existing A4 B&W 70gsm price to 3
   db.prepare("UPDATE prices SET price = 3 WHERE paper_size = 'A4' AND color_mode = 'Black & White' AND paper_type = '70gsm Standard'").run();
+  
+  // Update photo print prices as requested
+  db.prepare("UPDATE prices SET price = 80 WHERE paper_size = '2x3 inch (2 nos)' AND paper_type = 'Photo Print'").run();
+  db.prepare("UPDATE prices SET price = 80 WHERE paper_size = '4x6 inch' AND paper_type = 'Photo Print'").run();
 }
 
 // Migration: Add columns if they don't exist
@@ -370,9 +374,9 @@ app.post("/api/orders", (req, res) => {
         file.filename, 
         file.originalName, 
         file.pageCount, 
-        paperSize, 
-        paperType, 
-        colorMode,
+        file.paperSize || paperSize, 
+        file.paperType || paperType, 
+        file.colorMode || colorMode,
         isDelivery ? 1 : 0,
         deliveryDetails?.name || null,
         deliveryDetails?.phone || null,
@@ -382,7 +386,7 @@ app.post("/api/orders", (req, res) => {
         file.cloudinary_public_id || null,
         orderGroupId,
         orderType || 'document',
-        copies || 1
+        file.copies || copies || 1
       );
     }
   });

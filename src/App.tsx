@@ -48,6 +48,7 @@ interface FileData {
   filename: string;
   originalName: string;
   pageCount: number;
+  options?: OrderOptions;
 }
 
 interface OrderOptions {
@@ -251,6 +252,7 @@ export default function App() {
     phone: '',
     address: ''
   });
+  const [sameConfigForAll, setSameConfigForAll] = useState(true);
   const [options, setOptions] = useState<OrderOptions>({
     paperSize: 'A4',
     paperType: '70gsm Standard',
@@ -521,7 +523,11 @@ export default function App() {
         xhr.send(formData);
       });
 
-      setFiles(prev => [...prev, ...data]);
+      const dataWithDefaults = data.map(f => ({
+        ...f,
+        options: { ...options }
+      }));
+      setFiles(prev => [...prev, ...dataWithDefaults]);
     } catch (err: any) {
       setError(err.message || 'Failed to upload files. Please try again.');
       console.error(err);
@@ -600,6 +606,92 @@ export default function App() {
     }
   } as any);
 
+  const renderConfigForm = (
+    currentOptions: OrderOptions, 
+    onOptionChange: (updates: Partial<OrderOptions>) => void,
+    isIndividual = false
+  ) => {
+    const handlePaperSizeChangeLocal = (size: string) => {
+      const availableTypes = PAPER_CONFIG[size as keyof typeof PAPER_CONFIG][currentOptions.colorMode as keyof (typeof PAPER_CONFIG)['A4']];
+      onOptionChange({
+        paperSize: size,
+        paperType: availableTypes[0]
+      });
+    };
+
+    const handleColorModeChangeLocal = (mode: string) => {
+      const availableTypes = PAPER_CONFIG[currentOptions.paperSize as keyof typeof PAPER_CONFIG][mode as keyof (typeof PAPER_CONFIG)['A4']];
+      onOptionChange({
+        colorMode: mode,
+        paperType: availableTypes.includes(currentOptions.paperType) ? currentOptions.paperType : availableTypes[0]
+      });
+    };
+
+    return (
+      <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-6", isIndividual && "mt-4 p-6 bg-gray-50 rounded-2xl border border-gray-100")}>
+        <div className="space-y-2">
+          <label className="text-sm font-semibold text-gray-600">Paper Size</label>
+          <select 
+            value={currentOptions.paperSize}
+            onChange={(e) => handlePaperSizeChangeLocal(e.target.value)}
+            className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm font-bold"
+          >
+            <option value="A4">A4</option>
+            <option value="A3">A3</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-semibold text-gray-600">Paper Type</label>
+          <select 
+            value={currentOptions.paperType}
+            onChange={(e) => onOptionChange({paperType: e.target.value})}
+            className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm font-bold"
+          >
+            {(PAPER_CONFIG[currentOptions.paperSize as keyof typeof PAPER_CONFIG] as any)[currentOptions.colorMode].map((type: string) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-semibold text-gray-600">Number of Copies</label>
+          <div className="flex items-center gap-4 p-1.5 bg-white rounded-xl border border-gray-200 w-full justify-between shadow-sm">
+             <button 
+               onClick={() => onOptionChange({ copies: Math.max(1, currentOptions.copies - 1) })}
+               className="w-8 h-8 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
+             > - </button>
+             <span className="text-sm font-black text-gray-800 flex-1 text-center">{currentOptions.copies}</span>
+             <button 
+               onClick={() => onOptionChange({ copies: currentOptions.copies + 1 })}
+               className="w-8 h-8 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
+             > + </button>
+          </div>
+        </div>
+
+        <div className="space-y-2 md:col-span-1">
+          <label className="text-sm font-semibold text-gray-600">Color Mode</label>
+          <div className="grid grid-cols-2 gap-3">
+            {['Black & White', 'Full Color'].map((mode) => (
+              <button
+                key={mode}
+                onClick={() => handleColorModeChangeLocal(mode)}
+                className={cn(
+                  "px-3 py-2.5 rounded-xl border text-xs font-black uppercase transition-all",
+                  currentOptions.colorMode === mode 
+                    ? "bg-emerald-600 border-emerald-600 text-white shadow-md shadow-emerald-200" 
+                    : "bg-white border-gray-200 text-gray-500 hover:border-emerald-300"
+                )}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const handleOrder = async () => {
     const hasFiles = activeService === 'pvc_card' ? (pvcFrontFile && pvcBackFile) : files.length > 0;
     if (!hasFiles) return;
@@ -623,7 +715,13 @@ export default function App() {
     setIsUploading(true);
     try {
       const payload = activeService === 'documents' ? {
-        files,
+        files: sameConfigForAll ? files : files.map(f => ({
+          ...f,
+          paperSize: f.options?.paperSize,
+          paperType: f.options?.paperType,
+          colorMode: f.options?.colorMode,
+          copies: f.options?.copies
+        })),
         ...options,
         isDelivery,
         deliveryDetails,
@@ -749,24 +847,45 @@ export default function App() {
 
   const totalPages = files.reduce((sum, f) => sum + f.pageCount, 0);
   
-  const currentPriceObj = activeService === 'documents' ? prices.find(p => 
-    p.paper_size === options.paperSize && 
-    p.color_mode === options.colorMode && 
-    p.paper_type === options.paperType
-  ) : activeService === 'photos' ? prices.find(p => 
-    p.paper_size === photoOptions.size && 
-    p.paper_type === 'Photo Print'
-  ) : prices.find(p => 
-    p.paper_size === 'Standard PVC' && 
-    p.paper_type === 'PVC Card'
-  );
-
-  const pricePerPage = currentPriceObj ? currentPriceObj.price : 0;
-  
-  const deliveryFee = isDelivery ? parseFloat(settings.delivery_fee || '50') : 0;
-  const estimatedCost = activeService === 'pvc_card'
-    ? (pvcFrontFile && pvcBackFile ? (pricePerPage * pvcQuantity) + deliveryFee : 0)
-    : (files.length > 0) ? (activeService === 'documents' ? (totalPages * pricePerPage * options.copies) : (files.length * pricePerPage * photoOptions.copies)) + deliveryFee : 0;
+  const estimatedCost = React.useMemo(() => {
+    const deliveryFee = isDelivery ? parseFloat(settings.delivery_fee || '50') : 0;
+    
+    if (activeService === 'pvc_card') {
+      if (!pvcFrontFile || !pvcBackFile) return 0;
+      const priceObj = prices.find(p => p.paper_size === 'Standard PVC' && p.paper_type === 'PVC Card');
+      return (priceObj ? priceObj.price : 0) * pvcQuantity + deliveryFee;
+    }
+    
+    if (files.length === 0) return 0;
+    
+    if (activeService === 'photos') {
+      const priceObj = prices.find(p => p.paper_size === photoOptions.size && p.paper_type === 'Photo Print');
+      return (priceObj ? priceObj.price : 0) * files.length * photoOptions.copies + deliveryFee;
+    }
+    
+    if (sameConfigForAll) {
+      const priceObj = prices.find(p => 
+        p.paper_size === options.paperSize && 
+        p.color_mode === options.colorMode && 
+        p.paper_type === options.paperType
+      );
+      const price = priceObj ? priceObj.price : 0;
+      return (totalPages * price * options.copies) + deliveryFee;
+    } else {
+      let totalCost = 0;
+      files.forEach(file => {
+        const fileOpts = file.options || options;
+        const priceObj = prices.find(p => 
+          p.paper_size === fileOpts.paperSize && 
+          p.color_mode === fileOpts.colorMode && 
+          p.paper_type === fileOpts.paperType
+        );
+        const price = priceObj ? priceObj.price : 0;
+        totalCost += (file.pageCount * price * fileOpts.copies);
+      });
+      return totalCost + deliveryFee;
+    }
+  }, [files, activeService, options, photoOptions, pvcQuantity, pvcFrontFile, pvcBackFile, isDelivery, settings.delivery_fee, prices, sameConfigForAll, totalPages]);
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-emerald-100">
@@ -1165,97 +1284,81 @@ export default function App() {
                           Add More
                         </button>
                       </div>
-                      <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                      <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                         {files.map((f, idx) => (
-                          <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100 group">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center text-emerald-600 shrink-0">
-                                {activeService === 'documents' ? <FileText size={16} /> : <PhotoIcon size={16} />}
+                          <div key={idx} className={cn(
+                            "p-3 bg-gray-50 rounded-xl border border-gray-100 group transition-all",
+                            !sameConfigForAll && "bg-white shadow-sm border-emerald-100"
+                          )}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center text-emerald-600 shrink-0 border border-gray-100">
+                                  {activeService === 'documents' ? <FileText size={16} /> : <PhotoIcon size={16} />}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-bold truncate">{f.originalName}</p>
+                                  {activeService === 'documents' && <p className="text-[10px] text-gray-400 uppercase font-bold">{f.pageCount} {f.pageCount === 1 ? 'page' : 'pages'}</p>}
+                                </div>
                               </div>
-                              <div className="min-w-0">
-                                <p className="text-sm font-bold truncate">{f.originalName}</p>
-                                {activeService === 'documents' && <p className="text-[10px] text-gray-400 uppercase font-bold">{f.pageCount} {f.pageCount === 1 ? 'page' : 'pages'}</p>}
-                              </div>
+                              <button 
+                                onClick={() => removeFile(idx)}
+                                className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                              >
+                                <Trash2 size={16} />
+                              </button>
                             </div>
-                            <button 
-                              onClick={() => removeFile(idx)}
-                              className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                            >
-                              <Trash2 size={16} />
-                            </button>
+                            
+                            {!sameConfigForAll && activeService === 'documents' && f.options && (
+                              <div className="mt-4 pt-4 border-t border-gray-100">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 mb-4">Print Options for this file</p>
+                                {renderConfigForm(
+                                  f.options, 
+                                  (updates) => {
+                                    setFiles(prev => prev.map((file, i) => 
+                                      i === idx ? { ...file, options: { ...file.options!, ...updates } } : file
+                                    ));
+                                  },
+                                  true
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
+
+                      {activeService === 'documents' && files.length > 1 && (
+                        <div className="mt-6 flex items-center justify-between bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center text-emerald-600 shadow-sm border border-emerald-200">
+                              <Layers size={20} />
+                            </div>
+                            <div>
+                              <h4 className="text-sm font-bold text-emerald-900">Configure files separately?</h4>
+                              <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Set individual options per file</p>
+                            </div>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              className="sr-only peer" 
+                              checked={!sameConfigForAll}
+                              onChange={() => setSameConfigForAll(!sameConfigForAll)}
+                            />
+                            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                          </label>
+                        </div>
+                      )}
                     </div>
 
+                    {(sameConfigForAll || activeService === 'photos') && (
                     <div className="bg-white border border-gray-200 rounded-3xl p-8 shadow-sm">
                       {activeService === 'documents' ? (
                         <>
                           <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                             <Settings2 className="text-emerald-600" size={20} />
-                            Print Configuration
+                            {files.length > 1 ? 'Global Print Configuration' : 'Print Configuration'}
                           </h3>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                              <div className="space-y-2">
-                                <label className="text-sm font-semibold text-gray-600">Paper Size</label>
-                                <select 
-                                  value={options.paperSize}
-                                  onChange={(e) => handlePaperSizeChange(e.target.value)}
-                                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                                >
-                                  <option value="A4">A4</option>
-                                  <option value="A3">A3</option>
-                                </select>
-                              </div>
-
-                              <div className="space-y-2">
-                                <label className="text-sm font-semibold text-gray-600">Paper Type</label>
-                                <select 
-                                  value={options.paperType}
-                                  onChange={(e) => setOptions({...options, paperType: e.target.value})}
-                                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                                >
-                                  {(PAPER_CONFIG[options.paperSize as keyof typeof PAPER_CONFIG] as any)[options.colorMode].map((type: string) => (
-                                    <option key={type} value={type}>{type}</option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              <div className="space-y-2">
-                                <label className="text-sm font-semibold text-gray-600">Number of Copies</label>
-                                <div className="flex items-center gap-4 p-2 bg-gray-50 rounded-xl border border-gray-100 w-full justify-between">
-                                   <button 
-                                     onClick={() => setOptions(prev => ({ ...prev, copies: Math.max(1, prev.copies - 1) }))}
-                                     className="w-10 h-10 rounded-lg bg-white border border-gray-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
-                                   > - </button>
-                                   <span className="text-lg font-black text-gray-800 flex-1 text-center">{options.copies}</span>
-                                   <button 
-                                     onClick={() => setOptions(prev => ({ ...prev, copies: prev.copies + 1 }))}
-                                     className="w-10 h-10 rounded-lg bg-white border border-gray-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 transition-all font-black text-emerald-600 shadow-sm"
-                                   > + </button>
-                                </div>
-                              </div>
-
-                              <div className="space-y-2 md:col-span-1">
-                                <label className="text-sm font-semibold text-gray-600">Color Mode</label>
-                                <div className="grid grid-cols-2 gap-4">
-                                  {['Black & White', 'Full Color'].map((mode) => (
-                                    <button
-                                      key={mode}
-                                      onClick={() => handleColorModeChange(mode)}
-                                      className={cn(
-                                        "px-4 py-3 rounded-xl border text-sm font-medium transition-all",
-                                        options.colorMode === mode 
-                                          ? "bg-emerald-600 border-emerald-600 text-white shadow-lg shadow-emerald-200" 
-                                          : "bg-white border-gray-200 text-gray-600 hover:border-emerald-300"
-                                      )}
-                                    >
-                                      {mode}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                          </div>
+                          {renderConfigForm(options, (updates) => setOptions({ ...options, ...updates }))}
                         </>
                       ) : (
                         <div className="space-y-6">
@@ -1283,6 +1386,7 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                    )}
                   </motion.section>
                 )}
               </AnimatePresence>
@@ -1466,18 +1570,34 @@ export default function App() {
                         )}
                         {activeService === 'documents' && (
                           <>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-500">Paper Type</span>
-                              <span className="font-medium">{options.paperType}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-500">Color Mode</span>
-                              <span className="font-medium">{options.colorMode}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-500">Copies</span>
-                              <span className="font-medium">{options.copies} units</span>
-                            </div>
+                            {sameConfigForAll ? (
+                              <>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-gray-500">Paper Size</span>
+                                  <span className="font-medium">{options.paperSize}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-gray-500">Paper Type</span>
+                                  <span className="font-medium">{options.paperType}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-gray-500">Color Mode</span>
+                                  <span className="font-medium">{options.colorMode}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-gray-500">Copies</span>
+                                  <span className="font-medium">{options.copies} units</span>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                                <div className="flex items-center gap-2 mb-2 text-emerald-700">
+                                  <Layers size={14} />
+                                  <span className="text-xs font-bold uppercase tracking-wider">Individual Configs</span>
+                                </div>
+                                <p className="text-[10px] text-emerald-600 font-medium">Each file has its own custom print settings applied.</p>
+                              </div>
+                            )}
                           </>
                         )}
                         {activeService === 'photos' && (
@@ -2100,11 +2220,22 @@ export default function App() {
           </div>
           <div>
             <h4 className="font-bold mb-4 text-sm uppercase tracking-wider">Location</h4>
-            <p className="text-sm text-gray-500 leading-relaxed">
-              No.21/2, rayasandra main road, near g r sagar nivas,<br />
-              Naganathapura, E city post,<br />
-              Bengaluru, karnataka 560100
-            </p>
+            <a 
+              href="https://share.google/w2jNXmD6YL8wo2wRA" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-sm text-gray-500 leading-relaxed hover:text-emerald-600 transition-colors group flex flex-col"
+            >
+              <span>
+                No.21/2, rayasandra main road, near g r sagar nivas,<br />
+                Naganathapura, E city post,<br />
+                Bengaluru, karnataka 560100
+              </span>
+              <div className="mt-2 flex items-center gap-1.5 text-emerald-600 font-bold text-[10px] uppercase tracking-widest group-hover:translate-x-1 transition-transform">
+                <MapPin size={12} />
+                <span>View on Google Maps</span>
+              </div>
+            </a>
           </div>
         </div>
         <div className="max-w-5xl mx-auto px-6 mt-12 pt-8 border-t border-gray-100 flex flex-col md:row justify-between items-center gap-4">
